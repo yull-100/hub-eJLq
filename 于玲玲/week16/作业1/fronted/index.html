@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>狼人杀 - 多智能体博弈系统</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div id="app">
+    <!-- 顶部导航 -->
+    <header class="app-header">
+      <div class="header-left">
+        <h1 class="app-title">🐺 狼人杀</h1>
+        <span class="app-subtitle">多智能体博弈系统</span>
+      </div>
+      <div class="header-right">
+        <span class="server-status" :class="{ connected: serverConnected }">
+          {{ serverConnected ? '服务器已连接' : '服务器未连接' }}
+        </span>
+      </div>
+    </header>
+
+    <main class="app-main">
+      <!-- 左侧：控制面板 -->
+      <section class="panel panel-left">
+        <!-- 创建游戏 -->
+        <div class="card" v-if="!gameId">
+          <h2 class="card-title">创建游戏</h2>
+          <div class="form-row">
+            <label>玩家人数</label>
+            <input type="number" v-model.number="createConfig.player_count" min="3" max="12">
+          </div>
+          <div class="form-row">
+            <label>最大轮数</label>
+            <input type="number" v-model.number="createConfig.max_rounds" min="1" max="50">
+          </div>
+          <button class="btn btn-primary" @click="createGame" :disabled="loading">
+            {{ loading ? '创建中...' : '创建游戏' }}
+          </button>
+          <p class="error-text" v-if="error">{{ error }}</p>
+        </div>
+
+        <!-- 游戏控制 -->
+        <div class="card" v-if="gameId">
+          <h2 class="card-title">游戏控制</h2>
+          <div class="game-info">
+            <div class="info-row">
+              <span class="info-label">游戏编号</span>
+              <span class="info-value game-id">{{ gameId }}</span>
+              <button class="btn btn-sm" @click="leaveGame">退出</button>
+            </div>
+            <div class="info-row">
+              <span class="info-label">当前回合</span>
+              <span class="info-value">第 {{ gameState?.round || 0 }} 轮</span>
+            </div>
+            <div class="info-row">
+              <span class="info-label">当前阶段</span>
+              <span class="info-value phase-tag" :class="phaseClass">{{ phaseLabel }}</span>
+            </div>
+            <div class="info-row">
+              <span class="info-label">存活人数</span>
+              <span class="info-value">{{ gameState?.alive_count || 0 }} / {{ gameState?.player_count || 0 }}</span>
+            </div>
+          </div>
+
+          <div class="btn-group" v-if="!gameOver">
+            <button class="btn btn-primary" @click="stepGame" :disabled="loading">
+              {{ loading ? '执行中...' : '下一步 ▶' }}
+            </button>
+            <button class="btn btn-secondary" @click="runGame" :disabled="loading">
+              {{ loading ? '运行中...' : '完整运行 ⏭' }}
+            </button>
+          </div>
+
+          <div class="btn-group" v-if="gameOver">
+            <button class="btn btn-danger" @click="leaveGame">返回</button>
+          </div>
+
+          <p class="error-text" v-if="error">{{ error }}</p>
+        </div>
+
+        <!-- 玩家列表 -->
+        <div class="card" v-if="players.length > 0">
+          <h2 class="card-title">玩家列表</h2>
+          <div class="player-list">
+            <div class="player-item" v-for="p in players" :key="p.player_id"
+                 :class="{ dead: !p.is_alive, evil: p.camp === 'evil' }">
+              <div class="player-avatar" :class="{ dead: !p.is_alive }">
+                {{ p.is_alive ? '🟢' : '💀' }}
+              </div>
+              <div class="player-info">
+                <div class="player-name">{{ p.player_id }}</div>
+                <div class="player-detail">
+                  <span v-if="p.role" class="player-role">{{ roleCN(p.role) }}</span>
+                  <span v-if="p.camp" class="player-camp" :class="p.camp">{{ campCN(p.camp) }}</span>
+                  <span v-if="!p.is_alive" class="player-dead">已死亡</span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="empty-state" v-if="players.length === 0">
+            暂无玩家
+          </div>
+        </div>
+      </section>
+
+      <!-- 右侧：消息与日志 -->
+      <section class="panel panel-right">
+        <!-- Tab 切换 -->
+        <div class="tab-bar">
+          <button class="tab-btn" :class="{ active: activeTab === 'messages' }"
+                  @click="activeTab = 'messages'">💬 消息</button>
+          <button class="tab-btn" :class="{ active: activeTab === 'logs' }"
+                  @click="activeTab = 'logs'">📋 日志</button>
+          <button class="tab-btn" :class="{ active: activeTab === 'step' }"
+                  @click="activeTab = 'step'">📊 步骤结果</button>
+        </div>
+
+        <!-- 消息面板 -->
+        <div class="tab-content" v-show="activeTab === 'messages'">
+          <div class="messages-list" ref="messagesRef">
+            <div class="message-item" v-for="(msg, i) in messages" :key="i"
+                 :class="'msg-' + msg.type">
+              <div class="msg-header">
+                <span class="msg-sender">{{ msg.sender === 'system' ? '系统' : msg.sender }}</span>
+                <span class="msg-round" v-if="msg.round">第{{ msg.round }}轮</span>
+              </div>
+              <div class="msg-body">{{ msg.content }}</div>
+            </div>
+          </div>
+          <div class="empty-state" v-if="messages.length === 0 && gameId">
+            暂无消息，请先进行游戏步骤
+          </div>
+          <div class="empty-state" v-if="!gameId">
+            创建游戏后消息将显示在这里
+          </div>
+        </div>
+
+        <!-- 日志面板 -->
+        <div class="tab-content" v-show="activeTab === 'logs'">
+          <div class="logs-list" ref="logsRef">
+            <div class="log-line" v-for="(line, i) in logs" :key="i"
+                 :class="logLineClass(line)">
+              {{ line }}
+            </div>
+          </div>
+          <div class="empty-state" v-if="logs.length === 0 && gameId">
+            暂无日志
+          </div>
+          <div class="empty-state" v-if="!gameId">
+            游戏日志将显示在这里
+          </div>
+        </div>
+
+        <!-- 步骤结果面板 -->
+        <div class="tab-content" v-show="activeTab === 'step'">
+          <pre class="step-result-json" v-if="stepResult">{{ JSON.stringify(stepResult, null, 2) }}</pre>
+          <div class="empty-state" v-else-if="gameId">
+            请先执行游戏步骤
+          </div>
+          <div class="empty-state" v-else>
+            创建游戏后步骤结果将显示在这里
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- 游戏结束遮罩 -->
+    <div class="game-over-overlay" v-if="gameOver" @click="gameOver = false">
+      <div class="game-over-modal" @click.stop>
+        <h2 class="game-over-title">游戏结束</h2>
+        <div class="game-over-winner" :class="winnerClass">
+          {{ winnerText }}
+        </div>
+        <div class="game-over-stats">
+          <div>总轮数：{{ gameState?.round || 0 }}</div>
+          <div>存活：{{ gameState?.alive_count || 0 }} / {{ gameState?.player_count || 0 }}</div>
+        </div>
+        <div class="game-over-players">
+          <div class="player-item final" v-for="p in players" :key="p.player_id"
+               :class="{ dead: !p.is_alive, evil: p.camp === 'evil' }">
+            <span class="final-status">{{ p.is_alive ? '🟢' : '💀' }}</span>
+            <span class="final-name">{{ p.player_id }}</span>
+            <span class="final-role">{{ roleCN(p.role) }}</span>
+            <span class="final-camp" :class="p.camp">{{ campCN(p.camp) }}</span>
+          </div>
+        </div>
+        <button class="btn btn-primary" @click="leaveGame">返回</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
